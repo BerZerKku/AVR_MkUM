@@ -1,0 +1,236 @@
+/*
+ * main.cpp
+ *
+ *  Created on: 15.06.2016
+ *      Author: Shcheblykin
+ */
+
+#include <stdio.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <avr/pgmspace.h>
+#include <util/delay.h>
+
+
+
+// DEFINE /////////////////////////////////////////////////////////////////////
+
+/// Количество используемых каналов АЦП
+#define NUM_ADC_CHANNEL 6
+/// Маска для утсановки канала АЦП в регистре ADMUX
+#define MUX 0x07
+/// Количество отсчетов для фильтрации сигнала 2^(AV_LENGH_NUMBER)
+#define AV_LENGHT_NUMBER 6
+/// Размер буфера UART
+#define UART_BUF_LEN 20
+
+
+
+// VARIABLE ///////////////////////////////////////////////////////////////////
+
+/// Массив номеров используемых каналов АЦП
+static const uint8_t g_aAdcChannel[NUM_ADC_CHANNEL] = {0, 1, 2, 3, 6, 7};
+
+/// Массив усредненных значений используемых каналов АЦП
+uint16_t g_aAdcValue[NUM_ADC_CHANNEL] = {0};
+
+/// Счетчик принятых/переданных байт UART
+volatile uint8_t g_iUartCnt = 0;
+
+/// Количество данных на передачу UART
+volatile uint8_t g_nUartLenTx = 0;
+
+/// Буфер данных UART
+uint8_t g_aUartBuf[UART_BUF_LEN] = {0};
+
+
+
+// STATIC FUNCTION DECLARATION ////////////////////////////////////////////////
+
+void low_level_init() __attribute__((__naked__)) __attribute__((section(".init3")));
+static void StartADC();
+static void UartTxStart(uint8_t len);
+static void UartRxStart();
+
+
+// FUNCTION DEFINITION ////////////////////////////////////////////////////////
+
+/**	Запуск АЦП.
+ *
+ *	АЦП запускается в режиме непрерывного преобразования.
+ *	Тактовая частота модуля = F_CPU / division = 16M / 128 = 125кГц.
+ *	Первое преобазование происходит за 25 тактов (0.2мс), следующие за 13 (0.1мс).
+ *
+ */
+static void StartADC() {
+	ADMUX = (ADMUX & ~MUX) + g_aAdcChannel[0];
+	ADCSRA = (1 << ADEN)  |	// enable ADC
+			 (1 << ADSC)  |	// start conversion
+			 (0 << ADFR)  |	// 0 - single conversion / 1 - free runing
+			 (1 << ADIE)  |	// interrupt enable
+			 (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);	// division 128
+}
+
+/**	Передача данных по UART.
+ *
+ *	Если количество данных для передачи превышает размер буфера данных UART,
+ *	передача производиться не будет.
+ *
+ *	@param[in] len Количество данных для передачи.
+ */
+static void UartTxStart(uint8_t len) {
+	if (len < UART_BUF_LEN) {
+		g_iUartCnt = 0;
+		g_nUartLenTx = len;
+		UCSRB |= (1 << TXEN) | (1 << UDRIE) | (1 << TXCIE);
+	}
+}
+
+/**	Старт работы приемника UART
+ *
+ *	Включается приемник UART и прервание по приему.
+ *	Счетчик принятых байт обнуляется.
+ */
+static void UartRxStart() {
+	UCSRB |= (1 << RXEN) | (1 << RXCIE);
+	g_iUartCnt = 0;
+}
+
+int main() {
+	sei();
+
+	StartADC();
+	UartRxStart();
+
+	while(1) {
+		_delay_ms(200);
+		for(uint_fast8_t i = 0; i < NUM_ADC_CHANNEL; i++) {
+			uint_fast16_t val =  g_aAdcValue[i] >> AV_LENGHT_NUMBER;
+			g_aUartBuf[i*2] = val >> 8;
+			g_aUartBuf[i*2 + 1] = val;
+		}
+		UartTxStart(16);
+	}
+}
+
+
+/**	Прервание по опустошению буфера передачи UART.
+ *
+ *	Помещает очередной байт в буфер передатчика UART. Если данных на передчу
+ *	больше нет, прерывание по опустошению запрещается.
+ */
+ISR(USART_UDRE_vect) {
+	if (g_iUartCnt < g_nUartLenTx) {
+		UDR = g_aUartBuf[g_iUartCnt++];
+	} else {
+		UCSRB &= ~(1 << UDRIE);
+	}
+}
+
+/**	Прерывание по окончанию передачи UART.
+ *
+ *	После передачи последнего байта работа передатчика UART останавливается.
+ *	Прерывание по окончанию передачи тоже запрещается.
+ *
+ *	Включается приемник UART и прервание от него. Счетчик данных обнуляется.
+ *
+ */
+ISR(USART_TXC_vect) {
+	UCSRB &= ~((1 << TXEN) | (1 << TXCIE));
+	UartRxStart();
+}
+
+/**	Прерывание по получению данных UART.
+ *
+ */
+ISR(USART_RXC_vect) {
+	uint8_t state = UCSRA;
+	uint8_t val = UDR;
+
+	if (!(state & ((1 << FE) | (1 << DOR) | (1 << PE)))) {
+		PORTB ^= (1 << PB1);
+		if (g_iUartCnt < UART_BUF_LEN) {
+			g_aUartBuf[g_iUartCnt++] = val;
+		}
+	}
+}
+
+/**	Прерывание АЦП.
+ *
+ *	Для получения значения АЦП сначала считывается ADCL, а затем ADCH.
+ *
+ *	Постоянная времени фильтра T = K / SPS
+ *	, где постоянный коэффициент фильтра К =(2 ^ \a #AV_LENGHT_NUMBER)
+ *	SPS - частота дискретизации фильтра.
+ *
+ *	Например, тактовая частота 16МГц, делитель АЦП 128, преобразование 13 тактов.
+ *	Получаем SPS = 16M / 128 / 13 ~ 9600. K = 2^6 = 64.
+ *	T = 64/9600 = 6.6мс.
+ */
+ISR(ADC_vect) {
+	static uint8_t iChannel = 0;
+	uint16_t acc = g_aAdcValue[iChannel];
+	uint16_t val = ADC;
+
+	// усреднение/фильтрация
+	acc = acc - (acc >> AV_LENGHT_NUMBER) + val;
+	g_aAdcValue[iChannel] = acc;
+
+	iChannel = (iChannel + 1) % NUM_ADC_CHANNEL;
+	// выбор следующего канала и запуск преобразования
+	ADMUX = (ADMUX & ~MUX) + g_aAdcChannel[iChannel];
+	ADCSRA |= (1 << ADSC);
+}
+
+/**	Начальная инициализация периферии.
+ *
+ *	МК тактируется от внешнего кварца 16 МГц.
+ *
+ *
+ * 	Таймер 0 срабатывает каждые 3.2 мс.
+ * 	Таймер 1 срабатывает каждые 125 мс.
+ */
+void low_level_init() {
+	// PORTB
+	// PB.0 DEBUG TP1
+	// PB.1 DEBUG TP2
+	// PB.6			XTAL1
+	// PB.7			XTAL2
+	DDRB = (1 << PB1) | (1 << PB0);
+	PORTB = 0x00;
+
+	// PORTC
+	// PC.0	alt_in 	ADC0
+	// PC.1	alt_in 	ADC1
+	// PC.2 alt_in 	ADC2
+	// PC.3 alt_in 	ADC3
+	// PC.4	alt_bi 	SDA
+	// PC.5	alt_out SCL
+	// PC.6 alt_in	ADC6
+	// PC.7	alt_in	ADC7
+	DDRC = 0x00;
+	PORTC = 0x00;
+
+	// PORTD
+	// PD.0	alt_in	RXD
+	// PD.1	alt_out	TXD
+	DDRD = 0xFF;
+	PORTD = 0x00;
+
+	// UART
+	// UBRR = 16M/(16*1200) - 1 = 832 (U2X = 0)
+	UCSRA = (0 << U2X);
+	UCSRB = 0x00;
+	UCSRC = (1 << URSEL) |								// write to UCSRC
+			(0 << UPM1)  | (0 << UPM0) |				// parity mode disabled
+			(1 << USBS)  |								// 2 stop bits
+			(0 << UCSZ2) | (1 << UCSZ1) | (1 << UCSZ0);	// 8-bit character size
+	static const uint16_t ubrr = (F_CPU / 16) / 1200 - 1;
+	UBRRH = (uint8_t) (ubrr >> 8);
+	UBRRL = (uint8_t) ubrr;
+
+	// ADC
+	ADMUX = (0 << REFS1) | (1 << REFS0) |	// AVcc with cap at REF
+//			(1 << REFS1) | (1 << REFS0) | 	// internal 2.56V with cap at AREF
+			(0 << ADLAR);					// right adjust result
+};
