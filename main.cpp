@@ -10,8 +10,7 @@
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
 #include <util/delay.h>
-
-
+#include "tmp75.h"
 
 // DEFINE /////////////////////////////////////////////////////////////////////
 
@@ -23,16 +22,16 @@
 #define AV_LENGHT_NUMBER 6
 /// Размер буфера UART
 #define UART_BUF_LEN 20
-
-
+/// Адрес датчика температуры
+#define TEMP_IC_ADR 0x48
 
 // VARIABLE ///////////////////////////////////////////////////////////////////
 
 /// Массив номеров используемых каналов АЦП
-static const uint8_t g_aAdcChannel[NUM_ADC_CHANNEL] = {0, 1, 2, 3, 6, 7};
+static const uint8_t g_aAdcChannel[NUM_ADC_CHANNEL] = { 0, 1, 2, 3, 6, 7 };
 
 /// Массив усредненных значений используемых каналов АЦП
-uint16_t g_aAdcValue[NUM_ADC_CHANNEL] = {0};
+uint16_t g_aAdcValue[NUM_ADC_CHANNEL] = { 0 };
 
 /// Счетчик принятых/переданных байт UART
 volatile uint8_t g_iUartCnt = 0;
@@ -41,17 +40,18 @@ volatile uint8_t g_iUartCnt = 0;
 volatile uint8_t g_nUartLenTx = 0;
 
 /// Буфер данных UART
-uint8_t g_aUartBuf[UART_BUF_LEN] = {0};
+uint8_t g_aUartBuf[UART_BUF_LEN] = { 0 };
 
-
+/// Датчик температуры
+TTmp75 CTmp75(TEMP_IC_ADR);
 
 // STATIC FUNCTION DECLARATION ////////////////////////////////////////////////
 
-void low_level_init() __attribute__((__naked__)) __attribute__((section(".init3")));
+void low_level_init()
+		__attribute__((__naked__)) __attribute__((section(".init3")));
 static void StartADC();
 static void UartTxStart(uint8_t len);
 static void UartRxStart();
-
 
 // FUNCTION DEFINITION ////////////////////////////////////////////////////////
 
@@ -64,11 +64,11 @@ static void UartRxStart();
  */
 static void StartADC() {
 	ADMUX = (ADMUX & ~MUX) + g_aAdcChannel[0];
-	ADCSRA = (1 << ADEN)  |	// enable ADC
-			 (1 << ADSC)  |	// start conversion
-			 (0 << ADFR)  |	// 0 - single conversion / 1 - free runing
-			 (1 << ADIE)  |	// interrupt enable
-			 (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);	// division 128
+	ADCSRA = (1 << ADEN) |	// enable ADC
+			(1 << ADSC) |	// start conversion
+			(0 << ADFR) |	// 0 - single conversion / 1 - free runing
+			(1 << ADIE) |	// interrupt enable
+			(1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);	// division 128
 }
 
 /**	Передача данных по UART.
@@ -96,30 +96,70 @@ static void UartRxStart() {
 	g_iUartCnt = 0;
 }
 
-int main() {
+/**	Обработка принятых данных по UART.
+ *
+ *	@param[in] state Состояние приемника 0 - ошибок нет, иначе есть.
+ *	@param[in] byte Принятый байт данных.
+ */
+static void UartProtocol(uint8_t state, uint8_t byte) {
+	static uint8_t step = 0;
+	static uint8_t len = 0;
+
+	if ((state) || (step >= UART_BUF_LEN)) {
+		step = 0;
+	} else {
+		g_aUartBuf[step] = byte;
+		switch(step) {
+			case 0:
+				if (byte == 0x55)
+					step++;
+				break;
+			case 1:
+				if (byte == 0xAA)
+					step++;
+				break;
+			case 2:
+				step++;
+				break;
+			case 3:
+				len = byte + 4;
+				step = (len >= UART_BUF_LEN) ? 0 : step + 1;
+				break;
+			default:
+				if (step <= len) {
+					step++;
+				}
+		}
+	}
+}
+
+int __attribute__ ((OS_main)) main() {
+
 	sei();
 
 	StartADC();
 	UartRxStart();
 
-	while(1) {
+	while (1) {
+		CTmp75.readTemp();
 		_delay_ms(200);
-		for(uint_fast8_t i = 0; i < NUM_ADC_CHANNEL; i++) {
-			uint_fast16_t val =  g_aAdcValue[i] >> AV_LENGHT_NUMBER;
-			g_aUartBuf[i*2] = val >> 8;
-			g_aUartBuf[i*2 + 1] = val;
-		}
-		UartTxStart(16);
+		CTmp75.getTemperature();
+//		for(uint_fast8_t i = 0; i < NUM_ADC_CHANNEL; i++) {
+//			uint_fast16_t val =  g_aAdcValue[i] >> AV_LENGHT_NUMBER;
+//			g_aUartBuf[i*2] = val >> 8;
+//			g_aUartBuf[i*2 + 1] = val;
+//		}
+//		g_aUartBuf[NUM_ADC_CHANNEL*2] = 0xFF;
+//		g_aUartBuf[NUM_ADC_CHANNEL*2 + 1] =
+//		UartTxStart(16);
 	}
 }
-
 
 /**	Прервание по опустошению буфера передачи UART.
  *
  *	Помещает очередной байт в буфер передатчика UART. Если данных на передчу
  *	больше нет, прерывание по опустошению запрещается.
- */
-ISR(USART_UDRE_vect) {
+ */ISR(USART_UDRE_vect) {
 	if (g_iUartCnt < g_nUartLenTx) {
 		UDR = g_aUartBuf[g_iUartCnt++];
 	} else {
@@ -134,25 +174,18 @@ ISR(USART_UDRE_vect) {
  *
  *	Включается приемник UART и прервание от него. Счетчик данных обнуляется.
  *
- */
-ISR(USART_TXC_vect) {
+ */ISR(USART_TXC_vect) {
 	UCSRB &= ~((1 << TXEN) | (1 << TXCIE));
 	UartRxStart();
 }
 
 /**	Прерывание по получению данных UART.
  *
- */
-ISR(USART_RXC_vect) {
+ */ISR(USART_RXC_vect) {
 	uint8_t state = UCSRA;
-	uint8_t val = UDR;
+	uint8_t byte = UDR;
 
-	if (!(state & ((1 << FE) | (1 << DOR) | (1 << PE)))) {
-		PORTB ^= (1 << PB1);
-		if (g_iUartCnt < UART_BUF_LEN) {
-			g_aUartBuf[g_iUartCnt++] = val;
-		}
-	}
+	UartProtocol(state & ((1 << FE) | (1 << DOR) | (1 << PE)), byte);
 }
 
 /**	Прерывание АЦП.
@@ -166,8 +199,7 @@ ISR(USART_RXC_vect) {
  *	Например, тактовая частота 16МГц, делитель АЦП 128, преобразование 13 тактов.
  *	Получаем SPS = 16M / 128 / 13 ~ 9600. K = 2^6 = 64.
  *	T = 64/9600 = 6.6мс.
- */
-ISR(ADC_vect) {
+ */ISR(ADC_vect) {
 	static uint8_t iChannel = 0;
 	uint16_t acc = g_aAdcValue[iChannel];
 	uint16_t val = ADC;
@@ -180,6 +212,14 @@ ISR(ADC_vect) {
 	// выбор следующего канала и запуск преобразования
 	ADMUX = (ADMUX & ~MUX) + g_aAdcChannel[iChannel];
 	ADCSRA |= (1 << ADSC);
+}
+
+/**	Прерывание TWI.
+ *
+ */ISR(TWI_vect) {
+	uint8_t state = TWSR;
+
+	CTmp75.isr(state);
 }
 
 /**	Начальная инициализация периферии.
@@ -200,16 +240,16 @@ void low_level_init() {
 	PORTB = 0x00;
 
 	// PORTC
-	// PC.0	alt_in 	ADC0
-	// PC.1	alt_in 	ADC1
-	// PC.2 alt_in 	ADC2
-	// PC.3 alt_in 	ADC3
-	// PC.4	alt_bi 	SDA
-	// PC.5	alt_out SCL
-	// PC.6 alt_in	ADC6
-	// PC.7	alt_in	ADC7
+	// PC.0	alt_in 		ADC0
+	// PC.1	alt_in 		ADC1
+	// PC.2 alt_in 		ADC2
+	// PC.3 alt_in 		ADC3
+	// PC.4	alt_bi_hi 	SDA
+	// PC.5	alt_out_hi 	SCL
+	// PC.6 alt_in		ADC6
+	// PC.7	alt_in		ADC7
 	DDRC = 0x00;
-	PORTC = 0x00;
+	PORTC = (1 << PC4) | (1 << PC5);
 
 	// PORTD
 	// PD.0	alt_in	RXD
@@ -222,8 +262,8 @@ void low_level_init() {
 	UCSRA = (0 << U2X);
 	UCSRB = 0x00;
 	UCSRC = (1 << URSEL) |								// write to UCSRC
-			(0 << UPM1)  | (0 << UPM0) |				// parity mode disabled
-			(1 << USBS)  |								// 2 stop bits
+			(0 << UPM1) | (0 << UPM0) |				// parity mode disabled
+			(1 << USBS) |								// 2 stop bits
 			(0 << UCSZ2) | (1 << UCSZ1) | (1 << UCSZ0);	// 8-bit character size
 	static const uint16_t ubrr = (F_CPU / 16) / 1200 - 1;
 	UBRRH = (uint8_t) (ubrr >> 8);
@@ -233,4 +273,9 @@ void low_level_init() {
 	ADMUX = (0 << REFS1) | (1 << REFS0) |	// AVcc with cap at REF
 //			(1 << REFS1) | (1 << REFS0) | 	// internal 2.56V with cap at AREF
 			(0 << ADLAR);					// right adjust result
-};
+
+	// TIMER0
+
+	// TWI
+}
+;
