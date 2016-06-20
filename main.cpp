@@ -21,7 +21,7 @@
 /// Количество отсчетов для фильтрации сигнала 2^(AV_LENGH_NUMBER)
 #define AV_LENGHT_NUMBER 6
 /// Размер буфера UART
-#define UART_BUF_LEN 20
+#define UART_BUF_LEN 25
 /// Количество передаваемых байт данных
 #define UART_TX_LEN 16
 /// Адрес датчика температуры
@@ -189,11 +189,11 @@ int __attribute__ ((OS_main)) main() {
 					}
 					aUartBuf[len++] = CTmp75.getTemperature();
 					aUartBuf[len++] = 0x00;
+					aUartBuf[3] = len  - 4;	// кол-во байт данных
 					uint8_t crc = 0;
 					for(uint_fast8_t i = 0; i < (aUartBuf[3] + 2); i++) {
 						crc += aUartBuf[2 + i];
 					}
-					aUartBuf[3] = len  - 4;	// кол-во байт данных
 					aUartBuf[len++] = crc;
 					UartTxStart(len);
 				} break;
