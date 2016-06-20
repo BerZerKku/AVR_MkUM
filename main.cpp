@@ -170,6 +170,7 @@ int __attribute__ ((OS_main)) main() {
 
 	while (1) {
 		if (bIsUartRxMessage) {
+			uint8_t len = 0;
 			switch(aUartBuf[2]) {
 				case 0x01:
 					break;
@@ -180,7 +181,7 @@ int __attribute__ ((OS_main)) main() {
 					aUartBuf[1] = 0xAA;
 					aUartBuf[2] = 0x03;
 					aUartBuf[3] = 0;		// кол-во байт данных будет перезаписано позже
-					uint8_t len = 4;
+					len = 4;
 					for(uint_fast8_t i = 0; i < NUM_ADC_CHANNEL; i++) {
 						uint_fast16_t val =  aAdcValue[i] >> AV_LENGHT_NUMBER;
 						aUartBuf[len++] = val;
@@ -196,6 +197,12 @@ int __attribute__ ((OS_main)) main() {
 					aUartBuf[len++] = crc;
 					UartTxStart(len);
 				} break;
+			}
+
+			if (len > 0) {
+				UartTxStart(len);
+			} else {
+				UartRxStart();
 			}
 
 			bIsUartRxMessage = false;
