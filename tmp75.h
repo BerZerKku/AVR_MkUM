@@ -140,7 +140,7 @@ public:
 			default:
 				// завершение работы, отмена прерываний
 				temperature = s_i8TempError;
-				twcr &= ~(1 << TWIE);
+				twcr &= ~(1 << TWEN);
 		}
 
 		TWCR = twcr;

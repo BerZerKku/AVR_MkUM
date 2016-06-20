@@ -39,7 +39,7 @@ uint16_t aAdcValue[NUM_ADC_CHANNEL] = { 0 };
 volatile uint8_t iUartCnt = 0;
 
 /// Количество данных на передачу UART
-volatile uint8_t nUartLenTx = 0;
+uint8_t nUartLenTx = 0;
 
 /// Флаг наличия принятого сообщения UART
 volatile bool bIsUartRxMessage = false;
@@ -84,7 +84,7 @@ static void StartADC() {
  *	@param[in] len Количество данных для передачи.
  */
 static void UartTxStart(uint8_t len) {
-	if (len <= UART_BUF_LEN) {
+	if ((len > 0) && (len <= UART_BUF_LEN)) {
 		iUartCnt = 0;
 		nUartLenTx = len;
 		UCSRB |= (1 << TXEN) | (1 << UDRIE) | (1 << TXCIE);
@@ -179,8 +179,8 @@ int __attribute__ ((OS_main)) main() {
 					aUartBuf[0] = 0x55;
 					aUartBuf[1] = 0xAA;
 					aUartBuf[2] = 0x03;
-					aUartBuf[3] = (NUM_ADC_CHANNEL + 1)*2;
-					uint8_t len = 3;
+					aUartBuf[3] = 0;		// кол-во байт данных будет перезаписано позже
+					uint8_t len = 4;
 					for(uint_fast8_t i = 0; i < NUM_ADC_CHANNEL; i++) {
 						uint_fast16_t val =  aAdcValue[i] >> AV_LENGHT_NUMBER;
 						aUartBuf[len++] = val;
@@ -192,6 +192,7 @@ int __attribute__ ((OS_main)) main() {
 					for(uint_fast8_t i = 0; i < (aUartBuf[3] + 2); i++) {
 						crc += aUartBuf[2 + i];
 					}
+					aUartBuf[3] = len  - 4;	// кол-во байт данных
 					aUartBuf[len++] = crc;
 					UartTxStart(len);
 				} break;
@@ -200,13 +201,10 @@ int __attribute__ ((OS_main)) main() {
 			bIsUartRxMessage = false;
 		}
 
-		if (iUartCnt == UART_BUF_LEN) {
-			UartTxStart(iUartCnt);
-			iUartCnt = 0;
-		}
-
 		CTmp75.readTemp();
-		_delay_ms(100);
+		// желательно делать задержку не менее 5мс, иначе не будет успевать
+		// проходить опрос датчика температуры
+		_delay_ms(10);
 	}
 }
 
@@ -214,7 +212,8 @@ int __attribute__ ((OS_main)) main() {
  *
  *	Помещает очередной байт в буфер передатчика UART. Если данных на передчу
  *	больше нет, прерывание по опустошению запрещается.
- */ISR(USART_UDRE_vect) {
+ */
+ISR(USART_UDRE_vect) {
 	if (iUartCnt < nUartLenTx) {
 		UDR = aUartBuf[iUartCnt++];
 	} else {
@@ -229,7 +228,8 @@ int __attribute__ ((OS_main)) main() {
  *
  *	Включается приемник UART и прервание от него. Счетчик данных обнуляется.
  *
- */ISR(USART_TXC_vect) {
+ */
+ISR(USART_TXC_vect) {
 	UCSRB &= ~((1 << TXEN) | (1 << TXCIE));
 	UartRxStart();
 }
@@ -255,7 +255,8 @@ ISR(USART_RXC_vect) {
  *	Например, тактовая частота 16МГц, делитель АЦП 128, преобразование 13 тактов.
  *	Получаем SPS = 16M / 128 / 13 ~ 9600. K = 2^6 = 64.
  *	T = 64/9600 = 6.6мс.
- */ISR(ADC_vect) {
+ */
+ISR(ADC_vect) {
 	static uint8_t iChannel = 0;
 	uint16_t acc = aAdcValue[iChannel];
 	uint16_t val = ADC;
@@ -275,10 +276,6 @@ ISR(USART_RXC_vect) {
  */
  ISR(TWI_vect) {
 	uint8_t state = TWSR;
-
-	while(iUartCnt < UART_BUF_LEN) {
-		aUartBuf[iUartCnt++] = state & 0xf8;
-	}
 
 	CTmp75.isr(state);
 }
