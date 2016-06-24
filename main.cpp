@@ -12,7 +12,9 @@
 #include <util/delay.h>
 #include "tmp75.h"
 
+
 // DEFINE /////////////////////////////////////////////////////////////////////
+
 
 /// Количество используемых каналов АЦП
 #define NUM_ADC_CHANNEL 6
@@ -27,7 +29,9 @@
 /// Адрес датчика температуры
 #define TEMP_IC_ADR 0x48
 
+
 // VARIABLE ///////////////////////////////////////////////////////////////////
+
 
 /// Массив номеров используемых каналов АЦП
 static const uint8_t aAdcChannel[NUM_ADC_CHANNEL] = { 0, 1, 2, 3, 6, 7 };
@@ -50,7 +54,9 @@ uint8_t aUartBuf[UART_BUF_LEN] = { 0 };
 /// Датчик температуры
 TTmp75 CTmp75(TEMP_IC_ADR);
 
+
 // STATIC FUNCTION DECLARATION ////////////////////////////////////////////////
+
 
 void low_level_init()
 		__attribute__((__naked__)) __attribute__((section(".init3")));
@@ -58,7 +64,9 @@ static void StartADC();
 static void UartTxStart(uint8_t len);
 static void UartRxStart();
 
+
 // FUNCTION DEFINITION ////////////////////////////////////////////////////////
+
 
 /**	Запуск АЦП.
  *
@@ -291,9 +299,6 @@ ISR(ADC_vect) {
  *
  *	МК тактируется от внешнего кварца 16 МГц.
  *
- *
- * 	Таймер 0 срабатывает каждые 3.2 мс.
- * 	Таймер 1 срабатывает каждые 125 мс.
  */
 void low_level_init() {
 	// PORTB
@@ -335,8 +340,8 @@ void low_level_init() {
 	UBRRL = (uint8_t) ubrr; //
 
 	// ADC
-	ADMUX = (0 << REFS1) | (1 << REFS0) |	// AVcc with cap at REF
-//			(1 << REFS1) | (1 << REFS0) | 	// internal 2.56V with cap at AREF
+	ADMUX = (1 << REFS1) | (1 << REFS0) | 	// internal 2.56V with cap at AREF
+//			(0 << REFS1) | (1 << REFS0) |	// AVcc with cap at REF
 			(0 << ADLAR);					// right adjust result
 
 	// TIMER0

@@ -127,7 +127,7 @@ public:
 				break;
 
 			case I2C_STATE_MRX_DATA_ACK:	// получены данные и передан ACK
-				// чтение старшего байта температур, формирование NACK
+				// чтение старшего байта температуры, формирование NACK
 				temperature = (int8_t) TWDR;
 				break;
 
