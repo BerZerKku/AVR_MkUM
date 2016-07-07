@@ -28,7 +28,8 @@ void TTmp75::readTemp() {
 
 	uint8_t tmp = TWCR;
 
-	if ((tmp & (1 << TWINT)) == 0) {
+	if (((tmp & (1 << TWINT)) == 0) || (temperature == s_i8TempError)) {
+		TWCR = (1 << TWINT);
 		// формирование СТАРТ
 		TWCR = 	(1 << TWEN) | (1 << TWIE)  | (1 << TWINT) | (1 << TWSTA);
 	}
